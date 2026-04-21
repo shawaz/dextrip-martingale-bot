@@ -6,6 +6,7 @@ export interface BotConfig {
   liveTrading: boolean;
   dryRun: boolean;
   once: boolean;
+  useLlmDecider: boolean;
   anthropicApiKey?: string;
   anthropicModel: string;
   appwriteEndpoint?: string;
@@ -48,6 +49,7 @@ export function loadBotConfig(argv: string[]): BotConfig {
     liveTrading,
     dryRun: !liveTrading,
     once,
+    useLlmDecider: getBoolean(process.env.BOT_USE_LLM_DECIDER, false),
     anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     anthropicModel: process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-latest",
     appwriteEndpoint: process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT,

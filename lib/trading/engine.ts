@@ -73,6 +73,7 @@ async function processAgent(params: {
   decisions: StrategyDecision[];
   anthropicApiKey?: string;
   anthropicModel: string;
+  useLlmDecider: boolean;
   marketSlug?: string;
   maxRiskPerTradePct: number;
   kellyFraction: number;
@@ -92,19 +93,22 @@ async function processAgent(params: {
     return;
   }
 
-  const decision = await selectAgentDecision({
-    apiKey: params.anthropicApiKey,
-    model: params.anthropicModel,
-    agent: params.agent,
-    snapshot: {
-      symbol: params.snapshotSymbol,
-      timeframe: params.agent.timeframe,
-      price: params.currentPrice,
-      fetchedAt: params.snapshotFetchedAt,
-      candles: [],
-    },
-    strategyDecisions: params.decisions,
-  });
+  const deterministicDecision = params.decisions.find((decision) => decision.strategy === params.agent.preferredStrategy) ?? params.decisions[0];
+  const decision = params.anthropicApiKey && params.anthropicModel && params.useLlmDecider
+    ? await selectAgentDecision({
+        apiKey: params.anthropicApiKey,
+        model: params.anthropicModel,
+        agent: params.agent,
+        snapshot: {
+          symbol: params.snapshotSymbol,
+          timeframe: params.agent.timeframe,
+          price: params.currentPrice,
+          fetchedAt: params.snapshotFetchedAt,
+          candles: [],
+        },
+        strategyDecisions: params.decisions,
+      })
+    : deterministicDecision;
 
   const prefix = `[${params.agent.name} ${params.agent.timeframe}]`;
   console.log(`${prefix} ${decision.strategy} -> ${decision.signal} (${Math.round(decision.confidence * 100)}%)`);
@@ -187,6 +191,7 @@ export async function runTradingEngine(argv: string[]): Promise<void> {
             decisions,
             anthropicApiKey: config.anthropicApiKey,
             anthropicModel: config.anthropicModel,
+            useLlmDecider: config.useLlmDecider,
             marketSlug: config.bullpenMarketSlug,
             maxRiskPerTradePct: config.maxRiskPerTradePct,
             kellyFraction: config.kellyFraction,
