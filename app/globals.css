@@ -80,41 +80,50 @@
     --sidebar-accent-foreground: oklch(0.216 0.006 56.043);
     --sidebar-border: oklch(0.923 0.003 48.717);
     --sidebar-ring: oklch(0.709 0.01 56.259);
+
+    /* Arena Specific Colors */
+    --color-background-primary: #121212;
+    --color-background-secondary: #1a1a1a;
+    --color-border-tertiary: #222222;
+    --color-text-info: #7f77dd;
+    --color-up-bg: #eaf3de;
+    --color-up-text: #3b6d11;
+    --color-dn-bg: #fcebeb;
+    --color-dn-text: #a32d2d;
+    --color-hold-bg: #faeeda;
+    --color-hold-text: #633806;
+    --color-promoted-bg: #eeedfe;
+    --color-promoted-text: #3c3489;
 }
 
 .dark {
-    --background: oklch(0.147 0.004 49.25);
-    --foreground: oklch(0.985 0.001 106.423);
-    --card: oklch(0.216 0.006 56.043);
-    --card-foreground: oklch(0.985 0.001 106.423);
-    --popover: oklch(0.216 0.006 56.043);
-    --popover-foreground: oklch(0.985 0.001 106.423);
-    --primary: oklch(0.923 0.003 48.717);
-    --primary-foreground: oklch(0.216 0.006 56.043);
-    --secondary: oklch(0.268 0.007 34.298);
-    --secondary-foreground: oklch(0.985 0.001 106.423);
-    --muted: oklch(0.268 0.007 34.298);
-    --muted-foreground: oklch(0.709 0.01 56.259);
-    --accent: oklch(0.268 0.007 34.298);
-    --accent-foreground: oklch(0.985 0.001 106.423);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.553 0.013 58.071);
-    --chart-1: oklch(0.869 0.005 56.366);
-    --chart-2: oklch(0.553 0.013 58.071);
-    --chart-3: oklch(0.444 0.011 73.639);
-    --chart-4: oklch(0.374 0.01 67.558);
-    --chart-5: oklch(0.268 0.007 34.298);
-    --sidebar: oklch(0.216 0.006 56.043);
-    --sidebar-foreground: oklch(0.985 0.001 106.423);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0.001 106.423);
-    --sidebar-accent: oklch(0.268 0.007 34.298);
-    --sidebar-accent-foreground: oklch(0.985 0.001 106.423);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.553 0.013 58.071);
+    --background: #0a0a0a;
+    --foreground: #ffffff;
+    --card: #121212;
+    --card-foreground: #ffffff;
+    --popover: #121212;
+    --popover-foreground: #ffffff;
+    --primary: #ffffff;
+    --primary-foreground: #000000;
+    --secondary: #1a1a1a;
+    --secondary-foreground: #ffffff;
+    --muted: #1a1a1a;
+    --muted-foreground: #a0a0a0;
+    --accent: #1a1a1a;
+    --accent-foreground: #ffffff;
+    --destructive: #842020;
+    --border: #222222;
+    --input: #222222;
+    --ring: #333333;
+    
+    /* Arena Specific Overrides for Dark Mode */
+    --color-background-primary: #121212;
+    --color-background-secondary: #1a1a1a;
+    --color-up-bg: rgba(59, 109, 17, 0.15);
+    --color-dn-bg: rgba(163, 45, 45, 0.15);
+    --color-hold-bg: rgba(186, 117, 23, 0.15);
 }
+
 
 @layer base {
   * {

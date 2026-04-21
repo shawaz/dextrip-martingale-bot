@@ -177,7 +177,7 @@ export class ArenaStore {
     }
   }
 
-  async resolveFinishedRounds(currentPriceByTimeframe: Partial<Record<Timeframe, number>>): Promise<void> {
+  async resolveFinishedRounds(currentPriceByTimeframe: Partial<Record<Timeframe, number>>, options?: { skipPromotionUpdates?: boolean }): Promise<void> {
     const nowIso = new Date().toISOString();
     const rounds = await this.databases.listDocuments<AppwriteRoundDocument>(this.databaseId, "rounds", [
       Query.equal("status", "active"),
@@ -224,7 +224,9 @@ export class ArenaStore {
       }
     }
 
-    await this.updatePromotions();
+    if (!options?.skipPromotionUpdates) {
+      await this.updatePromotions();
+    }
   }
 
   async hasTradeForRound(agentId: string, roundId: string): Promise<boolean> {

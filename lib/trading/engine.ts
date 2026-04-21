@@ -160,7 +160,7 @@ export async function runTradingEngine(argv: string[]): Promise<void> {
       const snapshots = await Promise.all(timeframes.map((timeframe) => fetchMarketSnapshot(config.symbol, timeframe, config.candleLookback)));
       const priceMap = Object.fromEntries(snapshots.map((snapshot) => [snapshot.timeframe, snapshot.price])) as Record<Timeframe, number>;
 
-      await store.resolveFinishedRounds(priceMap);
+      await store.resolveFinishedRounds(priceMap, { skipPromotionUpdates: config.skipPromotionUpdates });
       const agents = await store.listActiveAgents(config.defaultBankrollUsd);
       const now = new Date();
 

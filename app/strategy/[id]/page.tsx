@@ -9,6 +9,57 @@ import { cn } from "@/lib/utils"
 
 const dbId = "arena"
 
+const strategyCatalog: Record<string, { score: number; report: string; summary: string; improve: string }> = {
+  "Volume Surge": {
+    score: 84,
+    report: "Strong when volume expands with clean directional follow-through.",
+    summary: "Hits momentum when volume breaks above recent baseline.",
+    improve: "Add higher timeframe trend confirmation before firing.",
+  },
+  "RSI Reversal": {
+    score: 74,
+    report: "Useful for snapback entries after overstretched moves.",
+    summary: "Fades overstretched moves after RSI extremes.",
+    improve: "Use structure levels so reversals only trigger near support or resistance.",
+  },
+  "Momentum Break": {
+    score: 81,
+    report: "Best for fast breakout continuation when range compression breaks.",
+    summary: "Chases clean range breakouts.",
+    improve: "Require retest strength before sizing bigger.",
+  },
+  "Trend Ride": {
+    score: 72,
+    report: "Good when the market is already trending cleanly.",
+    summary: "Keeps riding strong trends instead of scalping noise.",
+    improve: "Use trailing logic to protect winners.",
+  },
+  "VWAP Reclaim": {
+    score: 78,
+    report: "Reliable intraday structure setup around fair value.",
+    summary: "Enters when price reclaims VWAP with intent.",
+    improve: "Filter out flat sessions with weak participation.",
+  },
+  "Range Fade": {
+    score: 69,
+    report: "Solid in sideways conditions, weak in expansion.",
+    summary: "Fades repeated rejection at range edges.",
+    improve: "Disable when volatility expands.",
+  },
+  "Trend Pullback": {
+    score: 76,
+    report: "Cleaner entries inside healthy trends.",
+    summary: "Buys or sells retracements inside ongoing moves.",
+    improve: "Use moving average and structure alignment.",
+  },
+  "Liquidity Sweep Reversal": {
+    score: 71,
+    report: "Can catch high RR reversals after stop hunts.",
+    summary: "Waits for price to sweep liquidity then reverse.",
+    improve: "Wait for reclaim confirmation after the sweep.",
+  },
+}
+
 type Agent = {
   $id: string
   name: string
@@ -17,7 +68,7 @@ type Agent = {
   won: number
   loss: number
   winRate: number
-  timeframe: "15m" | "1h" | "4h"
+  timeframe?: string
   promoted?: boolean
   strategyCards?: string[]
 }
@@ -30,29 +81,6 @@ type Trade = {
   entry?: number
   exit?: number
   result: "pending" | "won" | "loss"
-}
-
-const strategyIdeas: Record<string, { summary: string; improve: string }> = {
-  "Volume Surge": {
-    summary: "Hits momentum when volume breaks above recent baseline.",
-    improve: "Add higher timeframe trend confirmation before firing.",
-  },
-  "RSI Reversal": {
-    summary: "Fades overstretched moves after RSI extremes.",
-    improve: "Use structure levels so reversals only trigger near support or resistance.",
-  },
-  "Momentum Break": {
-    summary: "Chases clean range breakouts.",
-    improve: "Require retest strength before sizing bigger.",
-  },
-  "Trend Ride": {
-    summary: "Keeps riding strong trends instead of scalping noise.",
-    improve: "Use trailing logic to protect winners.",
-  },
-  "VWAP Reclaim": {
-    summary: "Enters when price reclaims VWAP with intent.",
-    improve: "Filter out flat sessions with weak participation.",
-  },
 }
 
 export default function StrategyDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -81,8 +109,10 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
   const cardData = useMemo(() => {
     return (agent?.strategyCards ?? []).map((card) => ({
       name: card,
-      summary: strategyIdeas[card]?.summary ?? "Strategy card ready.",
-      improve: strategyIdeas[card]?.improve ?? "Refine signal quality with stricter filters.",
+      score: strategyCatalog[card]?.score ?? 60,
+      report: strategyCatalog[card]?.report ?? "No report yet.",
+      summary: strategyCatalog[card]?.summary ?? "Strategy card ready.",
+      improve: strategyCatalog[card]?.improve ?? "Refine signal quality with stricter filters.",
       active: latestTrade?.strategyName === card,
     }))
   }, [agent?.strategyCards, latestTrade?.strategyName])
@@ -93,7 +123,7 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
 
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-8 font-sans">
-      <div className="max-w-4xl mx-auto space-y-8">
+      <div className="max-w-5xl mx-auto space-y-8">
         <Link href="/" className="inline-flex items-center gap-2 text-zinc-500 hover:text-white transition-colors text-sm">
           <ArrowLeft className="w-4 h-4" /> Back to Arena
         </Link>
@@ -108,7 +138,7 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
               {agent.promoted && <Crown className="h-4 w-4 text-amber-400" />}
             </div>
             <div className="flex flex-wrap gap-2">
-              <span className="bg-zinc-900 text-zinc-200 px-2.5 py-0.5 rounded-full text-[10px] font-bold border border-zinc-700">{agent.timeframe}</span>
+              <span className="bg-zinc-900 text-zinc-200 px-2.5 py-0.5 rounded-full text-[10px] font-bold border border-zinc-700">15m specialist</span>
               <span className="bg-green-500/10 text-green-400 px-2.5 py-0.5 rounded-full text-[10px] font-bold border border-green-500/20">Wins: {agent.won}</span>
               <span className="bg-red-500/10 text-red-400 px-2.5 py-0.5 rounded-full text-[10px] font-bold border border-red-500/20">Losses: {agent.loss}</span>
               <span className="bg-amber-500/10 text-amber-300 px-2.5 py-0.5 rounded-full text-[10px] font-bold border border-amber-500/20">Win rate: {Math.round(agent.winRate ?? 0)}%</span>
@@ -117,7 +147,7 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-[#121212] border border-[#222222] rounded-2xl p-5">
             <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-2">Current signal</div>
             <div className={cn("text-lg font-semibold", latestTrade?.signal === "UP" ? "text-green-400" : latestTrade?.signal === "DOWN" ? "text-red-400" : "text-zinc-400")}>{latestTrade?.signal ?? "WAITING"}</div>
@@ -133,21 +163,44 @@ export default function StrategyDetailPage({ params }: { params: Promise<{ id: s
             <div className="text-lg font-semibold text-white">{latestTrade?.entry ? `$${latestTrade.entry.toFixed(2)}` : "---"}</div>
             <div className="text-xs text-zinc-500 mt-2">Last result: {latestTrade?.result ?? "pending"}</div>
           </div>
+          <div className="bg-[#121212] border border-[#222222] rounded-2xl p-5">
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold mb-2">Strategy score</div>
+            <div className="text-lg font-semibold text-white">{strategyCatalog[latestTrade?.strategyName || ""]?.score ?? "--"}/100</div>
+            <div className="text-xs text-zinc-500 mt-2">Based on current 15m confidence profile</div>
+          </div>
         </div>
 
-        <div className="bg-[#121212] border border-[#222222] rounded-2xl p-6 space-y-4">
-          <h3 className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Strategy cards</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {cardData.map((card) => (
-              <div key={card.name} className={cn("rounded-xl border p-4", card.active ? "border-amber-500/40 bg-amber-500/5" : "border-[#222222] bg-black/20")}>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-zinc-100">{card.name}</div>
-                  {card.active && <span className="text-[10px] rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 uppercase tracking-wide text-amber-300">active</span>}
-                </div>
-                <p className="mt-2 text-xs text-zinc-400">{card.summary}</p>
-                <p className="mt-3 text-xs text-zinc-500">Improve: {card.improve}</p>
-              </div>
-            ))}
+        <div className="bg-[#121212] border border-[#222222] rounded-2xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#222222] text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Strategy cards</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[#1a1a1a] border-b border-[#222222]">
+                <tr>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Card</th>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Score</th>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Report</th>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Summary</th>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Improve</th>
+                  <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#222222]">
+                {cardData.map((card) => (
+                  <tr key={card.name} className="hover:bg-white/[0.01]">
+                    <td className="px-4 py-4 text-zinc-100 font-semibold">{card.name}</td>
+                    <td className="px-4 py-4 text-zinc-300">{card.score}/100</td>
+                    <td className="px-4 py-4 text-zinc-300">{card.report}</td>
+                    <td className="px-4 py-4 text-zinc-400">{card.summary}</td>
+                    <td className="px-4 py-4 text-zinc-500">{card.improve}</td>
+                    <td className="px-4 py-4">
+                      <span className={cn("px-2 py-0.5 rounded text-[9px] font-bold uppercase", card.active ? "bg-amber-500/20 text-amber-300 border border-amber-500/20" : "bg-zinc-800 text-zinc-400")}>
+                        {card.active ? "active" : "available"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
 

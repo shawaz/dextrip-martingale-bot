@@ -2,12 +2,79 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { ArrowUpRight, Clock, Crown, History, LayoutGrid, Zap } from "lucide-react"
+import { ArrowUpRight, Crown, History, LayoutGrid, TrendingUp, Zap } from "lucide-react"
 import { Query } from "appwrite"
 import { databases, client } from "@/lib/appwrite"
 import { cn } from "@/lib/utils"
 
 const dbId = "arena"
+
+const strategyCatalog = [
+  {
+    name: "Volume Surge",
+    score: 84,
+    report: "Strong when volume expands with clean directional follow-through.",
+    when: "Use when volume spikes above recent baseline with strong candle close.",
+    weakness: "Can be trapped by fake spikes.",
+    improve: "Add higher timeframe trend filter.",
+  },
+  {
+    name: "RSI Reversal",
+    score: 74,
+    report: "Useful for snapback entries after overstretched moves.",
+    when: "Use when price stretches too far and RSI hits extremes.",
+    weakness: "Gets punished in hard trends.",
+    improve: "Pair with support and resistance.",
+  },
+  {
+    name: "Momentum Break",
+    score: 81,
+    report: "Best for fast breakout continuation when range compression breaks.",
+    when: "Use when price breaks a tight range with conviction.",
+    weakness: "False breakouts are common.",
+    improve: "Require retest confirmation.",
+  },
+  {
+    name: "Trend Ride",
+    score: 72,
+    report: "Good when the market is already trending cleanly.",
+    when: "Use when the market is moving in one direction with structure.",
+    weakness: "Late entries can be punished.",
+    improve: "Use trailing stops and pullback entries.",
+  },
+  {
+    name: "VWAP Reclaim",
+    score: 78,
+    report: "Reliable intraday structure setup around fair value.",
+    when: "Use when price reclaims VWAP with supporting volume.",
+    weakness: "Weak in flat sessions.",
+    improve: "Filter low participation periods.",
+  },
+  {
+    name: "Range Fade",
+    score: 69,
+    report: "Solid in sideways conditions, weak in expansion.",
+    when: "Use when price repeatedly rejects the same boundaries.",
+    weakness: "Breakouts kill it.",
+    improve: "Disable in volatility expansion.",
+  },
+  {
+    name: "Trend Pullback",
+    score: 76,
+    report: "Cleaner entries inside healthy trends.",
+    when: "Use when price pulls back into a strong trend.",
+    weakness: "Fails when trend is exhausted.",
+    improve: "Use moving average and structure alignment.",
+  },
+  {
+    name: "Liquidity Sweep Reversal",
+    score: 71,
+    report: "Can catch high RR reversals after stop hunts.",
+    when: "Use when price sweeps highs or lows then snaps back.",
+    weakness: "Hard to time cleanly.",
+    improve: "Wait for reclaim confirmation.",
+  },
+]
 
 type Agent = {
   $id: string
@@ -17,7 +84,7 @@ type Agent = {
   won: number
   loss: number
   winRate: number
-  timeframe: "15m" | "1h" | "4h"
+  timeframe?: string
   promoted?: boolean
   strategyCards?: string[]
 }
@@ -26,7 +93,7 @@ type Round = {
   $id: string
   roundId: string
   asset: string
-  timeframe: "15m" | "1h" | "4h"
+  timeframe?: string
   startTime: string
   endTime: string
   entryPrice?: number
@@ -49,10 +116,26 @@ type Trade = {
 function formatCountdown(endTime?: string): string {
   if (!endTime) return "--:--"
   const diff = new Date(endTime).getTime() - Date.now()
+  if (Number.isNaN(diff)) return "--:--"
   if (diff <= 0) return "00:00"
   const mins = Math.floor(diff / 60000)
   const secs = Math.floor((diff % 60000) / 1000)
   return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
+}
+
+function formatEtWindow(startTime?: string, endTime?: string): string {
+  if (!startTime || !endTime) return "--:-- to --:-- ET"
+  const options: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "America/New_York",
+  }
+  return `${new Date(startTime).toLocaleTimeString("en-US", options)} - ${new Date(endTime).toLocaleTimeString("en-US", options)} ET`
+}
+
+function formatTimeframe(value?: string): string {
+  return value || "15m"
 }
 
 export default function ArenaPage() {
@@ -61,6 +144,7 @@ export default function ArenaPage() {
   const [rounds, setRounds] = useState<Round[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [timeLeft, setTimeLeft] = useState("--:--")
+  const [btcPrice, setBtcPrice] = useState<number | null>(null)
 
   const fetchData = async () => {
     try {
@@ -90,31 +174,48 @@ export default function ArenaPage() {
     return () => unsubscribe()
   }, [])
 
+  useEffect(() => {
+    const fetchPrice = async () => {
+      try {
+        const response = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        const payload = (await response.json()) as { price?: string }
+        if (payload.price) setBtcPrice(Number(payload.price))
+      } catch (error) {
+        console.error("Failed to fetch BTC price:", error)
+      }
+    }
+
+    fetchPrice()
+    const timer = setInterval(fetchPrice, 15000)
+    return () => clearInterval(timer)
+  }, [])
+
   const activeRounds = useMemo(() => rounds.filter((round) => round.status === "active"), [rounds])
+  const primaryRound = activeRounds[0]
 
   useEffect(() => {
+    setTimeLeft(formatCountdown(primaryRound?.endTime))
     const timer = setInterval(() => {
-      const nextEnding = [...activeRounds].sort(
-        (left, right) => new Date(left.endTime).getTime() - new Date(right.endTime).getTime(),
-      )[0]
-      setTimeLeft(formatCountdown(nextEnding?.endTime))
+      setTimeLeft(formatCountdown(primaryRound?.endTime))
     }, 1000)
-
     return () => clearInterval(timer)
-  }, [activeRounds])
+  }, [primaryRound?.endTime])
 
   const leaderboardData = useMemo(() => {
     return agents
       .map((agent) => {
-        const activeRound = activeRounds.find((round) => round.timeframe === agent.timeframe)
-        const latestTrade = trades.find((trade) => trade.agentId === agent.$id && trade.roundId === activeRound?.roundId)
+        const latestTrade = trades.find((trade) => trade.agentId === agent.$id && trade.roundId === primaryRound?.roundId)
+        const strategyMeta = strategyCatalog.find((strategy) => strategy.name === latestTrade?.strategyName)
+        const strategyScore = strategyMeta?.score ?? 60
         return {
           ...agent,
           currentTrade: latestTrade,
+          strategyScore,
+          strategyReport: strategyMeta?.report ?? "No strategy report yet.",
         }
       })
-      .sort((a, b) => Number(b.winRate) - Number(a.winRate) || Number(b.won) - Number(a.won))
-  }, [agents, activeRounds, trades])
+      .sort((a, b) => Number(b.winRate) - Number(a.winRate) || b.strategyScore - a.strategyScore)
+  }, [agents, trades, primaryRound])
 
   const promotedAgents = leaderboardData.filter((agent) => agent.promoted)
   const totalWins = agents.reduce((sum, agent) => sum + Number(agent.won ?? 0), 0)
@@ -125,16 +226,34 @@ export default function ArenaPage() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">Dextrip Arena</h1>
-            <p className="text-sm text-zinc-500">Simpsons agents battle across 15m, 1h, and 4h. Top agent per timeframe gets execution rights.</p>
+            <p className="text-sm text-zinc-500">BTC 15m paper battle. Agents compete with strategy discipline before earning real execution rights.</p>
           </div>
           <div className="flex items-center gap-2 bg-red-950/30 border border-red-900/50 text-red-500 px-3 py-1.5 rounded-full text-xs font-medium">
             <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-            {activeRounds.length ? "Rounds Live" : "Waiting For Bot"}
+            {primaryRound ? "BTC 15m Live" : "Waiting For Bot"}
           </div>
         </div>
 
         <div className="bg-[#121212] border border-[#222222] rounded-xl p-5 flex flex-col md:flex-row justify-between gap-6 shadow-sm">
           <div className="space-y-3">
+            <div className="space-y-1">
+              <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Current BTC round</span>
+              <h2 className="text-lg font-medium">{formatEtWindow(primaryRound?.startTime, primaryRound?.endTime)}</h2>
+              <div className="flex flex-wrap gap-4 pt-1 text-xs text-zinc-400">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-green-500/50" />
+                  BTC price <span className="text-zinc-100 font-mono font-bold">{btcPrice ? `$${btcPrice.toLocaleString()}` : "--"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500/50" />
+                  Entry <span className="text-zinc-100 font-mono font-bold">{primaryRound?.entryPrice ? `$${primaryRound.entryPrice.toLocaleString()}` : "--"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-500/50" />
+                  Timeframe <span className="text-zinc-100 font-mono font-bold">{formatTimeframe(primaryRound?.timeframe)}</span>
+                </div>
+              </div>
+            </div>
             <div className="space-y-1">
               <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">Promoted for live execution</span>
               <div className="flex flex-wrap gap-2 pt-1">
@@ -142,31 +261,24 @@ export default function ArenaPage() {
                   <div key={agent.$id} className="inline-flex items-center gap-2 rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-xs">
                     <Crown className="h-3.5 w-3.5 text-amber-400" />
                     <span>{agent.name}</span>
-                    <span className="text-zinc-400">{agent.timeframe}</span>
                     <span className="text-zinc-400">{Math.round(agent.winRate ?? 0)}%</span>
                   </div>
                 )) : <span className="text-sm text-zinc-500">No promoted agents yet</span>}
               </div>
             </div>
-            <div className="flex flex-wrap gap-4 pt-1 text-xs text-zinc-400">
-              {activeRounds.map((round) => (
-                <div key={round.$id} className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-green-500/50" />
-                  {round.timeframe} entry <span className="text-zinc-100 font-mono font-bold">${round.entryPrice?.toLocaleString() || "0.00"}</span>
-                </div>
-              ))}
-            </div>
           </div>
-          <div className="flex flex-col items-end justify-center">
-            <div className="text-3xl font-mono font-medium tracking-tighter">{timeLeft}</div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">next round close</div>
+          <div className="flex flex-col items-end justify-center gap-3">
+            <div>
+              <div className="text-3xl font-mono font-medium tracking-tighter">{timeLeft}</div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold text-right">remaining in round</div>
+            </div>
           </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: "Active Agents", value: agents.length, icon: LayoutGrid },
-            { label: "Promoted", value: promotedAgents.length, icon: Crown },
+            { label: "BTC Price", value: btcPrice ? `$${Math.round(btcPrice).toLocaleString()}` : "--", icon: TrendingUp },
             { label: "Total Rounds", value: rounds.length, icon: History },
             { label: "Total Wins", value: totalWins, color: "text-amber-500", icon: Zap },
           ].map((stat, i) => (
@@ -183,6 +295,7 @@ export default function ArenaPage() {
         <div className="flex items-center gap-1 bg-[#121212] p-1 rounded-lg border border-[#222222] w-fit shadow-inner">
           {[
             { id: "arena", label: "Arena Leaderboard" },
+            { id: "strategy", label: "Strategy" },
             { id: "round", label: "Round History" },
             { id: "trade", label: "Trade History" },
           ].map((tab) => (
@@ -210,7 +323,6 @@ export default function ArenaPage() {
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Timeframe</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Strategy</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Signal</th>
-                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Cards</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Loss</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Won</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Win Rate</th>
@@ -232,8 +344,15 @@ export default function ArenaPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-zinc-300">{agent.timeframe}</td>
-                      <td className="px-4 py-4 whitespace-nowrap text-zinc-400 italic">{agent.currentTrade?.strategyName || "Searching..."}</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-zinc-300">15m</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-zinc-400 italic">
+                        <div className="flex items-center gap-2">
+                          <span>{agent.currentTrade?.strategyName || "Searching..."}</span>
+                          <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", agent.strategyScore >= 80 ? "bg-green-500/10 text-green-400 border border-green-500/20" : agent.strategyScore >= 70 ? "bg-amber-500/10 text-amber-300 border border-amber-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20")}>
+                            {agent.strategyScore}/100
+                          </span>
+                        </div>
+                      </td>
                       <td className="px-4 py-4 whitespace-nowrap">
                         <div className={cn(
                           "inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-bold tracking-tighter uppercase border",
@@ -242,15 +361,6 @@ export default function ArenaPage() {
                           {agent.currentTrade?.signal === "UP" && "▲"}
                           {agent.currentTrade?.signal === "DOWN" && "▼"}
                           {agent.currentTrade?.signal || "WAITING"}
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        <div className="flex max-w-[240px] flex-wrap gap-1">
-                          {(agent.strategyCards ?? []).slice(0, 3).map((card) => (
-                            <span key={card} className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[9px] uppercase tracking-wide text-zinc-300">
-                              {card}
-                            </span>
-                          ))}
                         </div>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap font-mono text-red-500/70">{agent.loss}</td>
@@ -275,6 +385,39 @@ export default function ArenaPage() {
             </div>
           )}
 
+          {activeTab === "strategy" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#1a1a1a] border-b border-[#222222]">
+                  <tr>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Strategy</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Score</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Report</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">When to Use</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Weakness</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Improve</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#222222]">
+                  {strategyCatalog.map((strategy) => (
+                    <tr key={strategy.name} className="hover:bg-white/[0.01] align-top">
+                      <td className="px-4 py-4 text-zinc-100 font-semibold">{strategy.name}</td>
+                      <td className="px-4 py-4">
+                        <span className={cn("rounded-full px-2 py-1 text-[10px] font-bold", strategy.score >= 80 ? "bg-green-500/10 text-green-400 border border-green-500/20" : strategy.score >= 70 ? "bg-amber-500/10 text-amber-300 border border-amber-500/20" : "bg-red-500/10 text-red-400 border border-red-500/20")}>
+                          {strategy.score}/100
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-zinc-300">{strategy.report}</td>
+                      <td className="px-4 py-4 text-zinc-400">{strategy.when}</td>
+                      <td className="px-4 py-4 text-zinc-400">{strategy.weakness}</td>
+                      <td className="px-4 py-4 text-zinc-500">{strategy.improve}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {activeTab === "round" && (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
@@ -283,6 +426,7 @@ export default function ArenaPage() {
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Round ID</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Timeframe</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Asset</th>
+                    <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">ET Window</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Entry</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Exit</th>
                     <th className="px-4 py-3 font-bold text-zinc-500 uppercase tracking-widest text-[9px]">Status</th>
@@ -292,8 +436,9 @@ export default function ArenaPage() {
                   {rounds.map((round) => (
                     <tr key={round.$id} className="hover:bg-white/[0.01]">
                       <td className="px-4 py-4 font-mono text-zinc-400">{round.roundId}</td>
-                      <td className="px-4 py-4 text-zinc-300">{round.timeframe}</td>
+                      <td className="px-4 py-4 text-zinc-300">15m</td>
                       <td className="px-4 py-4 text-zinc-100 font-bold">{round.asset}</td>
+                      <td className="px-4 py-4 text-zinc-300">{formatEtWindow(round.startTime, round.endTime)}</td>
                       <td className="px-4 py-4 font-mono text-zinc-300">${round.entryPrice?.toLocaleString() || "---"}</td>
                       <td className="px-4 py-4 font-mono text-zinc-300">${round.exitPrice?.toLocaleString() || "---"}</td>
                       <td className="px-4 py-4">
@@ -326,9 +471,9 @@ export default function ArenaPage() {
                     const agent = agents.find((candidate) => candidate.$id === trade.agentId)
                     return (
                       <tr key={trade.$id} className="hover:bg-white/[0.01]">
-                        <td className="px-4 py-4 text-zinc-500 font-mono">{new Date(trade.$createdAt).toLocaleTimeString()}</td>
+                        <td className="px-4 py-4 text-zinc-500 font-mono">{new Date(trade.$createdAt).toLocaleString()}</td>
                         <td className="px-4 py-4 font-bold text-zinc-100">{agent?.name}</td>
-                        <td className="px-4 py-4 text-zinc-400">{agent?.timeframe}</td>
+                        <td className="px-4 py-4 text-zinc-400">15m</td>
                         <td className="px-4 py-4 text-zinc-400 italic">{trade.strategyName}</td>
                         <td className="px-4 py-4">
                           <span className={cn("font-bold", trade.signal === "UP" ? "text-green-500" : "text-red-500")}>{trade.signal}</span>
