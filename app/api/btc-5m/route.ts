@@ -5,6 +5,8 @@ import { eq, and, desc, lt } from "drizzle-orm"
 import { fetchPolymarketRoundTruth } from "@/lib/trading/polymarket"
 import { buildScaledLadder, replayStreakMachine } from "@/lib/trading/streak-machine"
 import crypto from "crypto"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 
 async function getTargetProfit() {
   try {
@@ -67,11 +69,41 @@ async function seedAgents() {
   }
 }
 
+async function toggleLiveAgent(agentId: string, enabled: boolean) {
+  const now = new Date().toISOString()
+  const existing = await db.query.agents.findFirst({ where: eq(agents.id, agentId) })
+  if (existing) {
+    await db.update(agents).set({ isLive: enabled, updatedAt: now }).where(eq(agents.id, agentId))
+  }
+  await sqlite.execute(
+    `INSERT OR REPLACE INTO agents (id, name, initials, color, timeframe, bankroll, starting_bankroll, is_active, promoted, won, loss, win_rate, total_pnl, daily_pnl, max_drawdown, is_live, created_at, updated_at)
+     SELECT id, name, initials, color, timeframe, bankroll, starting_bankroll, is_active, promoted, won, loss, win_rate, total_pnl, daily_pnl, max_drawdown, ?, created_at, ?
+     FROM agents WHERE id = ?`,
+    [enabled ? 1 : 0, now, agentId]
+  ).catch(() => {})
+}
+
+const execFileAsync = promisify(execFile)
+
+async function getWalletBalance() {
+  try {
+    const { stdout } = await execFileAsync("python3.11", ["-c", `from py_clob_client.client import ClobClient\nfrom py_clob_client.clob_types import BalanceAllowanceParams, AssetType\nimport os, json\nkey=os.getenv(\"POLYMARKET_PRIVATE_KEY\")\nfunder=os.getenv(\"POLYMARKET_FUNDER\")\nif not key or not funder:\n    print(json.dumps({\"connected\": False, \"balance\": None}))\nelse:\n    temp=ClobClient(\"https://clob.polymarket.com\", key=key, chain_id=137, signature_type=2, funder=funder)\n    creds=temp.create_or_derive_api_creds()\n    client=ClobClient(\"https://clob.polymarket.com\", key=key, chain_id=137, creds=creds, signature_type=2, funder=funder)\n    res=client.get_balance_allowance(BalanceAllowanceParams(asset_type=AssetType.COLLATERAL))\n    raw=float(res.get(\"balance\", 0))\n    print(json.dumps({\"connected\": True, \"balance\": raw / 1_000_000}))`], {
+      env: process.env,
+    })
+    return JSON.parse(stdout.trim())
+  } catch (error) {
+    console.error("wallet balance error:", error)
+    return { connected: false, balance: null }
+  }
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const shouldReset = searchParams.get("reset") === "true"
     const newTarget = searchParams.get("target")
+    const toggleAgent = searchParams.get("toggleLive")
+    const toggleEnabled = searchParams.get("liveEnabled") === "true"
 
     if (shouldReset) {
       const existingAgents = await db.select().from(agents).where(eq(agents.timeframe, "5m"))
@@ -80,6 +112,10 @@ export async function GET(req: Request) {
       }
       await db.delete(rounds).where(eq(rounds.timeframe, "5m"))
       await db.delete(agents).where(eq(agents.timeframe, "5m"))
+    }
+
+    if (toggleAgent) {
+      await toggleLiveAgent(toggleAgent, toggleEnabled)
     }
 
     if (newTarget) {
@@ -96,7 +132,28 @@ export async function GET(req: Request) {
       }
     }
 
+    await sqlite.execute(`ALTER TABLE trades ADD COLUMN trade_mode TEXT NOT NULL DEFAULT 'paper'`).catch(() => {})
+    await sqlite.execute(`ALTER TABLE trades ADD COLUMN external_order_id TEXT`).catch(() => {})
+    await sqlite.execute(`ALTER TABLE trades ADD COLUMN order_status TEXT NOT NULL DEFAULT 'idle'`).catch(() => {})
+    await sqlite.execute(`ALTER TABLE trades ADD COLUMN target_profit_snapshot REAL NOT NULL DEFAULT 5`).catch(() => {})
+
+    for (const colSql of [
+      `ALTER TABLE agents ADD COLUMN preferred_strategy TEXT`,
+      `ALTER TABLE agents ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE agents ADD COLUMN is_live INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN won INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN loss INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN win_rate REAL NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN total_pnl REAL NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN daily_pnl REAL NOT NULL DEFAULT 0`,
+      `ALTER TABLE agents ADD COLUMN max_drawdown REAL NOT NULL DEFAULT 0`,
+    ]) {
+      await sqlite.execute(colSql).catch(() => {})
+    }
+
     const targetProfit = await getTargetProfit()
+    const wallet = await getWalletBalance()
     const ladder = buildScaledLadder(targetProfit)
 
     await seedAgents()
@@ -139,10 +196,12 @@ export async function GET(req: Request) {
 
       const roundTrades = await db.select().from(trades).where(eq(trades.roundId, round.roundId))
       for (const trade of roundTrades) {
+        const won = trade.signal === truth.resolvedDirection
         await db.update(trades).set({
           exitPrice: truth.finalPrice ?? truth.priceToBeat ?? 0,
-          result: trade.signal === truth.resolvedDirection ? "won" : "loss",
-          pnl: 0,
+          result: won ? "won" : "loss",
+          pnl: won ? Number(trade.targetProfitSnapshot ?? trade.stake ?? 0) : -Number(trade.stake ?? 0),
+          orderStatus: trade.tradeMode === "live" ? "settled" : trade.orderStatus,
           updatedAt: new Date().toISOString(),
         }).where(eq(trades.id, trade.id))
       }
@@ -159,17 +218,17 @@ export async function GET(req: Request) {
     const currentPrice = Number(liveTruth?.finalPrice ?? liveTruth?.priceToBeat ?? 0)
     const rsi = calculateRsi(currentPrice > 0 ? [...recentCloses, currentPrice] : recentCloses, 14)
 
+    const recentDirections = closedRounds
+      .map((round) => round.resolvedDirection)
+      .filter((direction): direction is string => Boolean(direction))
+    const previousDirection = recentDirections[0] ?? liveTruth?.recentResults?.[0]?.direction ?? null
+    const previousThreeUp = recentDirections.slice(0, 3).length === 3 && recentDirections.slice(0, 3).every((direction) => direction === "UP")
+    const previousThreeDown = recentDirections.slice(0, 3).length === 3 && recentDirections.slice(0, 3).every((direction) => direction === "DOWN")
+
     if (activeRound) {
       for (const streak of streakAgents) {
         const existingTrade = await db.query.trades.findFirst({ where: and(eq(trades.agentId, streak.id), eq(trades.roundId, activeRound.roundId)) })
         if (existingTrade) continue
-
-        const recentDirections = closedRounds
-          .map((round) => round.resolvedDirection)
-          .filter((direction): direction is string => Boolean(direction))
-        const previousDirection = recentDirections[0] ?? liveTruth?.recentResults?.[0]?.direction ?? null
-        const previousThreeUp = recentDirections.slice(0, 3).length === 3 && recentDirections.slice(0, 3).every((direction) => direction === "UP")
-        const previousThreeDown = recentDirections.slice(0, 3).length === 3 && recentDirections.slice(0, 3).every((direction) => direction === "DOWN")
 
         let shouldTrade = streak.trigger === "always"
         if (streak.trigger === "prev_up") shouldTrade = previousDirection === "UP"
@@ -184,7 +243,7 @@ export async function GET(req: Request) {
         const state = replayStreakMachine(
           priorTrades
             .filter((trade) => trade.roundId.startsWith("BTC5M-"))
-            .map((trade) => ({ stake: Number(trade.stake), result: trade.result as "won" | "loss" | "pending" | "skipped" })),
+            .map((trade) => ({ stake: Number(trade.stake), result: trade.result as "won" | "loss" | "pending" | "skipped", targetProfit: Number(trade.targetProfitSnapshot ?? targetProfit) })),
           ladder,
           targetProfit,
           1000,
@@ -202,6 +261,9 @@ export async function GET(req: Request) {
           stake,
           entryPrice: liveTruth?.priceToBeat ?? 0,
           result: "pending",
+          targetProfitSnapshot: targetProfit,
+          tradeMode: "paper",
+          orderStatus: "simulated",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         })
@@ -210,12 +272,18 @@ export async function GET(req: Request) {
 
     const agentResults = await db.select().from(agents).where(eq(agents.timeframe, "5m"))
     const recentTrades = await db.select().from(trades).where(and(eq(trades.strategyId, "streak-5m"))).orderBy(desc(trades.createdAt)).limit(100)
+    const liveTrades = recentTrades.filter((trade) => trade.tradeMode === "live")
+    const paperTrades = recentTrades.filter((trade) => trade.tradeMode !== "live")
 
     const rows = streakAgents.map((streak) => {
       const agent = agentResults.find((row) => row.id === streak.id)
-      const agentTrades = recentTrades
+      const baseTrades = streak.id === "PREVIOUS_THREE_UP_5M" || streak.id === "PREVIOUS_THREE_DOWN_5M"
+        ? (paperTrades.filter((trade) => trade.agentId === streak.id && trade.roundId.startsWith("BTC5M-")).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()))
+        : (paperTrades.filter((trade) => trade.agentId === streak.id && trade.roundId.startsWith("BTC5M-")).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()))
+      const liveAgentTrades = liveTrades
         .filter((trade) => trade.agentId === streak.id && trade.roundId.startsWith("BTC5M-"))
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      const agentTrades = baseTrades
 
       const settledTrades = agentTrades.filter((trade) => trade.result !== "pending")
       const pendingTrade = agentTrades.find((trade) => trade.result === "pending")
@@ -224,6 +292,7 @@ export async function GET(req: Request) {
         settledTrades.map((trade) => ({
           stake: Number(trade.stake),
           result: trade.result as "won" | "loss" | "pending" | "skipped",
+          targetProfit: Number(trade.targetProfitSnapshot ?? targetProfit),
         })),
         ladder,
         targetProfit,
@@ -245,7 +314,20 @@ export async function GET(req: Request) {
         status = "active"
       }
 
+      const livePendingStake = liveAgentTrades.filter((trade) => trade.result === "pending").reduce((sum, trade) => sum + Number(trade.stake ?? 0), 0)
+      const liveRealizedProfit = liveAgentTrades.reduce((sum, trade) => sum + Math.max(0, Number(trade.pnl ?? 0)), 0)
+      const liveRealizedLoss = liveAgentTrades.reduce((sum, trade) => sum + Math.abs(Math.min(0, Number(trade.pnl ?? 0))), 0)
       const balance = state.realizedProfit - state.realizedLoss - invested
+      const triggerActive =
+        streak.trigger === "always" ? true :
+        streak.trigger === "prev_up" ? previousDirection === "UP" :
+        streak.trigger === "prev_down" ? previousDirection === "DOWN" :
+        streak.trigger === "prev_three_up" ? previousThreeUp :
+        streak.trigger === "prev_three_down" ? previousThreeDown :
+        streak.trigger === "rsi_up" ? rsi != null && rsi <= 30 :
+        streak.trigger === "rsi_down" ? rsi != null && rsi >= 70 : false
+
+      const isLive = agent?.isLive ?? false
       return {
         id: streak.id,
         name: streak.name,
@@ -254,23 +336,44 @@ export async function GET(req: Request) {
         currentStep,
         previousStep,
         invested,
+        liveInvested: livePendingStake,
         targetProfit,
         profit: state.realizedProfit,
+        liveProfit: liveRealizedProfit - liveRealizedLoss,
         loss: state.realizedLoss,
         balance,
         capital: state.totalCapital + balance,
         ladder,
-        status,
+        status: pendingTrade ? "active" : triggerActive ? "ready" : status,
+        triggerActive,
+        isLive,
       }
     })
 
     const recommendedTrades = rows
-      .filter((row) => row.status === "active")
+      .filter((row) => row.triggerActive)
       .map((row) => ({
+        name: row.name,
         agentId: row.id,
         direction: row.direction,
         stake: row.ladder[row.currentStep - 1] || row.ladder[0],
       }))
+
+    const liveCandidates = rows.filter((row) => row.id === "PREVIOUS_THREE_UP_5M" || row.id === "PREVIOUS_THREE_DOWN_5M")
+    const liveFocus = liveCandidates.filter((row) => row.triggerActive)
+
+    const liveHistory = recentTrades
+      .filter((trade) => trade.tradeMode === "live")
+      .slice(0, 50)
+      .map((trade) => {
+        const match = String(trade.roundId).match(/BTC5M-(\d+)/)
+        const start = match ? new Date(Number(match[1]) * 1000) : null
+        const end = start ? new Date(start.getTime() + 5 * 60 * 1000) : null
+        const windowLabel = start && end
+          ? `${start.toLocaleDateString("en-US", { month: "long", day: "numeric" })}, ${start.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })} - ${end.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}`
+          : trade.roundId
+        return { ...trade, windowLabel }
+      })
 
     return NextResponse.json({
       live: liveTruth,
@@ -282,6 +385,7 @@ export async function GET(req: Request) {
       rows,
       recommendedTrades,
       history: liveTruth?.recentResults || [],
+      liveFocus,
       recentTrades: recentTrades.slice(0, 50).map((trade) => {
         const match = String(trade.roundId).match(/BTC5M-(\d+)/)
         const start = match ? new Date(Number(match[1]) * 1000) : null
@@ -298,6 +402,14 @@ export async function GET(req: Request) {
       rsi,
       targetProfit,
       ladder,
+      liveHistory,
+      wallet,
+      liveSummary: {
+        balance: wallet?.balance ?? 0,
+        invested: liveTrades.filter((trade) => trade.result === "pending").reduce((sum, trade) => sum + Number(trade.stake ?? 0), 0),
+        profits: liveTrades.reduce((sum, trade) => sum + Number(trade.pnl ?? 0), 0),
+        returns: liveTrades.reduce((sum, trade) => sum + Number(trade.pnl ?? 0), 0),
+      },
       stats: {
         invested: rows.reduce((sum, row) => sum + row.invested, 0),
         profits: rows.reduce((sum, row) => sum + row.profit, 0),
