@@ -41,7 +41,8 @@ async function test() {
     console.log("Recommended Trades Sample:", recommendedTrades);
     console.log("--- Logic Check Passed ---");
   } catch (e) {
-    console.error("Database check failed (Expected if Turso env vars are missing and local DB is empty):", e.message);
+    const message = e instanceof Error ? e.message : String(e)
+    console.error("Database check failed (Expected if Turso env vars are missing and local DB is empty):", message);
   }
 }
 

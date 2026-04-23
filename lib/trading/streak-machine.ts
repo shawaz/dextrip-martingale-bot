@@ -16,6 +16,7 @@ export type StreakMachineState = {
 export type StreakMachineTrade = {
   stake: number
   result: "won" | "loss" | "pending" | "skipped"
+  targetProfit?: number
 }
 
 export function createInitialStreakState(capital: number): StreakMachineState {
@@ -55,7 +56,7 @@ export function replayStreakMachine(trades: StreakMachineTrade[], ladder: number
 
     if (trade.result === "won") {
       state.successfulCycles += 1
-      state.realizedProfit += targetProfit
+      state.realizedProfit += trade.targetProfit ?? targetProfit
       state.previousStep = resolvedStep
       state.currentStep = 0
       state.investedOpen = 0
